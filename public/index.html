@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tracker NHC</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f3f2ef;
+    --surface-1: #fcfcfb;
+    --border: #e2e1dc;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #7b7a75;
+    --grid: #e6e5e0;
+    --series-1: #2a78d6;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    /* Saffir-Simpson ordinal ramp, always shown with its text label */
+    --cat-td: #86b6ef;
+    --cat-ts: #2a78d6;
+    --cat-1: #eda100;
+    --cat-2: #eb6834;
+    --cat-3: #e34948;
+    --cat-4: #b3262e;
+    --cat-5: #7a1230;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #111110;
+      --surface-1: #1a1a19;
+      --border: #30302d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8f8e85;
+      --grid: #2b2b28;
+      --series-1: #3987e5;
+      --cat-td: #6da7ec;
+      --cat-ts: #3987e5;
+      --cat-1: #e0a019;
+      --cat-2: #e2703f;
+      --cat-3: #e66767;
+      --cat-4: #d0424a;
+      --cat-5: #c2306a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1400px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  h1 { font-size: 22px; margin: 0; line-height: 1.2; }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+  .muted { color: var(--text-muted); }
+  .sub { color: var(--text-secondary); }
+
+  header.card { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between; }
+  .title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border); font-weight: 600; font-size: 13px; white-space: nowrap;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .status { display: grid; gap: 2px; text-align: right; font-size: 13px; }
+  .status b { font-variant-numeric: tabular-nums; }
+
+  .banner { border-left: 4px solid var(--warning); }
+  .banner.alert { border-left-color: var(--critical); }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .kpi .label { font-size: 12px; color: var(--text-secondary); }
+  .kpi .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .kpi .value small { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
+  .kpi .note { font-size: 12px; color: var(--text-muted); }
+
+  .cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; }
+  .stack { display: grid; gap: 12px; align-content: start; }
+  @media (max-width: 980px) { .cols { grid-template-columns: 1fr; } .status { text-align: left; } }
+  #map { height: 560px; border-radius: 8px; background: var(--page); }
+  @media (max-width: 980px) { #map { height: 420px; } }
+  .leaflet-container { font: inherit; }
+  .city-label {
+    background: none; border: 0; box-shadow: none; color: var(--text-secondary);
+    font-size: 11px; padding: 0; text-shadow: 0 0 3px var(--surface-1), 0 0 3px var(--surface-1);
+  }
+  .city-label::before { display: none; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend svg { flex: none; }
+
+  #chart { position: relative; }
+  #chart svg { display: block; width: 100%; height: auto; }
+  .tip {
+    position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 9px; font-size: 12px; white-space: nowrap; display: none;
+    box-shadow: 0 2px 10px rgba(0,0,0,.18);
+  }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+  td.num, th.num { text-align: right; }
+  tr:last-child td { border-bottom: 0; }
+  .scroll { overflow-x: auto; }
+
+  pre { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; color: var(--text-secondary); }
+  .section h3 { font-size: 13px; margin: 12px 0 4px; }
+  .section h3:first-child { margin-top: 0; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  button {
+    font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
+  }
+  button[aria-pressed="true"] { color: var(--text-primary); border-color: var(--text-secondary); font-weight: 600; }
+  a { color: var(--series-1); }
+  details summary { cursor: pointer; color: var(--text-secondary); font-weight: 600; font-size: 13px; }
+  details[open] summary { margin-bottom: 10px; }
+  footer { font-size: 12px; color: var(--text-muted); padding: 0 4px 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="card">
+    <div>
+      <div class="title">
+        <h1 id="name">Cargando…</h1>
+        <span class="badge" id="badge" hidden><span class="dot"></span><span></span></span>
+      </div>
+      <div class="sub" id="headline"></div>
+    </div>
+    <div class="status">
+      <div id="advisory" class="sub"></div>
+      <div>Próximo aviso: <b id="next">—</b></div>
+      <div class="muted" id="checked"></div>
+    </div>
+  </header>
+
+  <div class="card banner" id="banner" hidden></div>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="cols">
+    <div class="card">
+      <h2>Trayectoria y cono de pronóstico</h2>
+      <div id="map"></div>
+      <div class="legend" id="mapLegend"></div>
+    </div>
+    <div class="stack">
+      <div class="card">
+        <h2>Intensidad: viento máximo sostenido (km/h)</h2>
+        <div id="chart"><div class="tip" id="tip"></div></div>
+        <div class="legend">
+          <span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--series-1)" stroke-width="2"/></svg>Observado</span>
+          <span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--series-1)" stroke-width="2" stroke-dasharray="5 4"/></svg>Pronóstico NHC</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Máximo acercamiento del centro pronosticado</h2>
+        <div class="scroll"><table id="cities"></table></div>
+        <div class="muted" style="font-size:12px;margin-top:8px">
+          Sobre la línea central del pronóstico. El centro real puede quedar en cualquier punto del cono,
+          y los efectos se extienden lejos del centro.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Pronóstico oficial por punto</h2>
+    <div class="scroll"><table id="forecast"></table></div>
+  </section>
+
+  <section class="cols">
+    <div class="card">
+      <h2>Aviso público</h2>
+      <div class="tabs">
+        <button id="langEs" aria-pressed="true">Español (traducción automática NHC)</button>
+        <button id="langEn" aria-pressed="false">Inglés (original)</button>
+      </div>
+      <div class="section" id="advisoryText"></div>
+    </div>
+    <div class="card">
+      <h2>Discusión técnica del pronóstico</h2>
+      <details><summary>Ver discusión (inglés)</summary><pre id="discussion"></pre></details>
+      <h2 style="margin-top:16px">Fuentes NHC</h2>
+      <div id="links"></div>
+    </div>
+  </section>
+
+  <footer>
+    Datos: National Hurricane Center (NOAA). Se actualiza solo cada 2 minutos; el NHC emite avisos completos cada 6 horas
+    e intermedios cada 3 cuando hay vigilancias o avisos costeros. Este tablero es informativo: para decisiones de
+    seguridad sigue a Protección Civil, SMN/CONAGUA y el NHC.
+  </footer>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const REFRESH_MS = 2 * 60 * 1000;
+const KT_TO_KMH = 1.852;
+
+const CITIES = [
+  ['Acapulco', 16.86, -99.88],
+  ['Zihuatanejo', 17.64, -101.55],
+  ['Lázaro Cárdenas', 17.96, -102.19],
+  ['Manzanillo', 19.05, -104.32],
+  ['Puerto Vallarta', 20.65, -105.23],
+  ['Mazatlán', 23.25, -106.41],
+  ['Cabo San Lucas', 22.89, -109.92],
+];
+
+// Saffir-Simpson scale by sustained wind in knots.
+const CATEGORIES = [
+  { min: 137, key: '5', short: 'Cat 5', long: 'Huracán categoría 5' },
+  { min: 113, key: '4', short: 'Cat 4', long: 'Huracán categoría 4' },
+  { min: 96, key: '3', short: 'Cat 3', long: 'Huracán categoría 3' },
+  { min: 83, key: '2', short: 'Cat 2', long: 'Huracán categoría 2' },
+  { min: 64, key: '1', short: 'Cat 1', long: 'Huracán categoría 1' },
+  { min: 34, key: 'ts', short: 'TT', long: 'Tormenta tropical' },
+  { min: 0, key: 'td', short: 'DT', long: 'Depresión tropical' },
+];
+const THRESHOLDS = CATEGORIES.filter((c) => c.min > 0).reverse();
+const CLASS_NAMES = {
+  TD: 'Depresión Tropical', TS: 'Tormenta Tropical', HU: 'Huracán', MH: 'Huracán',
+  STD: 'Depresión Subtropical', STS: 'Tormenta Subtropical',
+  PTC: 'Potencial Ciclón Tropical', PC: 'Ciclón Post-tropical', EX: 'Ciclón Post-tropical',
+};
+const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSO', 'SO', 'OSO', 'O', 'ONO', 'NO', 'NNO'];
+
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const catOf = (kt) => CATEGORIES.find((c) => kt >= c.min);
+const catColor = (kt) => css(`--cat-${catOf(kt).key}`);
+// NHC rounds km/h to the nearest 5.
+const kmh = (kt) => Math.round((kt * KT_TO_KMH) / 5) * 5;
+const compass = (deg) => COMPASS[Math.round(deg / 22.5) % 16];
+const fmtPos = (lat, lon) => `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(1)}°${lon >= 0 ? 'E' : 'O'}`;
+
+const dayTime = new Intl.DateTimeFormat('es-MX', { weekday: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const clock = new Intl.DateTimeFormat('es-MX', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+const fmtTime = (iso) => dayTime.format(new Date(iso));
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'style') node.style.cssText = v;
+    else if (k === 'class') node.className = v;
+    else node.setAttribute(k, v);
+  }
+  node.append(...children.filter((c) => c !== null && c !== undefined));
+  return node;
+}
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const a = Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lon2 - lon1) * rad) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(a));
+}
+
+// Advisory position plus the forecast points that carry a position.
+function forecastTrack(data) {
+  const c = data.current;
+  const f = data.forecast;
+  if (!c || !f) return [];
+  return [
+    { t: Date.parse(f.issued), lat: c.lat, lon: c.lon, windKt: c.windKt, gustKt: f.gustKt, now: true },
+    ...f.points.filter((p) => p.lat !== null).map((p) => ({ ...p, t: Date.parse(p.valid) })),
+  ];
+}
+
+function closestApproach(track, lat, lon) {
+  let best = null;
+  for (let i = 0; i < track.length - 1; i++) {
+    const a = track[i], b = track[i + 1];
+    const steps = Math.max(1, Math.round((b.t - a.t) / 3600000));
+    for (let s = 0; s <= steps; s++) {
+      const k = s / steps;
+      const km = haversineKm(lat, lon, a.lat + (b.lat - a.lat) * k, a.lon + (b.lon - a.lon) * k);
+      if (!best || km < best.km) {
+        best = { km, t: a.t + (b.t - a.t) * k, windKt: a.windKt + ((b.windKt ?? a.windKt) - a.windKt) * k };
+      }
+    }
+  }
+  return best;
+}
+
+// ---------- header, KPIs, banner ----------
+
+let lastAdvisory = null;
+let nextAdvisoryMs = null;
+let lang = 'es';
+let latest = null;
+
+function renderHeader(data) {
+  const c = data.current;
+  if (!data.active) {
+    $('name').textContent = `${data.stormId.toUpperCase()} ya no aparece como sistema activo`;
+    $('badge').hidden = true;
+    $('headline').textContent = 'El NHC dejó de emitir avisos para este sistema. Se muestra el historial disponible.';
+    $('advisory').textContent = '';
+    document.title = `${data.stormId.toUpperCase()} · inactivo`;
+    return;
+  }
+  const cat = catOf(c.windKt);
+  const className = CLASS_NAMES[c.classification] || c.classification;
+  $('name').textContent = `${className} ${c.name}`;
+  const badge = $('badge');
+  badge.hidden = false;
+  badge.firstElementChild.style.background = catColor(c.windKt);
+  badge.lastElementChild.textContent = cat.long;
+  $('headline').textContent = (data.advisoryEs || data.advisory || {}).headline || '';
+  $('advisory').textContent = `Aviso #${Number.parseInt(c.advisoryNumber, 10)}${c.advisoryNumber.replace(/^\d+/, '').toUpperCase()} · emitido ${fmtTime(c.advisoryIssued)}`;
+  document.title = `${c.name} · ${cat.short} · ${kmh(c.windKt)} km/h`;
+}
+
+function kpi(label, value, unit, note) {
+  return el('div', { class: 'card kpi' },
+    el('div', { class: 'label' }, label),
+    el('div', { class: 'value' }, value, unit ? el('small', {}, ` ${unit}`) : null),
+    el('div', { class: 'note' }, note || ' '));
+}
+
+function renderKpis(data) {
+  const box = $('kpis');
+  box.replaceChildren();
+  if (!data.active) return;
+  const c = data.current;
+  const f = data.forecast;
+  box.append(
+    kpi('Viento máximo sostenido', kmh(c.windKt), 'km/h', `${c.windKt} kt`),
+    kpi('Rachas', f && f.gustKt ? kmh(f.gustKt) : '—', f && f.gustKt ? 'km/h' : '', f && f.gustKt ? `${f.gustKt} kt` : ''),
+    kpi('Presión central mínima', c.pressureMb, 'mb', 'Si baja, el sistema se intensifica'),
+    kpi('Movimiento', `${compass(c.movementDir)}`, `a ${kmh(c.movementKt)} km/h`, `${c.movementDir}° · ${c.movementKt} kt`),
+    kpi('Posición del centro', fmtPos(c.lat, c.lon), '', nearestCity(c)),
+  );
+  const peak = f && f.points.filter((p) => p.windKt).reduce((m, p) => (!m || p.windKt > m.windKt ? p : m), null);
+  if (peak) {
+    box.append(kpi('Pico pronosticado', kmh(peak.windKt), 'km/h', `${catOf(peak.windKt).long} · ${fmtTime(peak.valid)}`));
+  }
+}
+
+function nearestCity(c) {
+  const [name, km] = CITIES
+    .map(([n, lat, lon]) => [n, haversineKm(c.lat, c.lon, lat, lon)])
+    .sort((a, b) => a[1] - b[1])[0];
+  return `a ${Math.round(km / 5) * 5} km de ${name}`;
+}
+
+function renderBanner(data, changed) {
+  const banner = $('banner');
+  const notes = [];
+  const c = data.current;
+  const last = data.history && data.history[data.history.length - 1];
+  // The ATCF best track is updated between advisories; it is operational, not official.
+  if (c && last && Date.parse(last.time) > Date.parse(c.lastUpdate) &&
+      (last.windKt !== c.windKt || (last.name || '').toUpperCase() !== c.name.toUpperCase())) {
+    notes.push(`Dato preliminar posterior al aviso (${fmtTime(last.time)}): ${last.name} · ${kmh(last.windKt)} km/h (${last.windKt} kt) · ${catOf(last.windKt).long}. No es oficial hasta el próximo aviso del NHC.`);
+  }
+  if (data.watchesWarnings && data.watchesWarnings.features.length) {
+    notes.push('Hay vigilancias o avisos costeros en efecto: revisa el aviso público más abajo.');
+  }
+  if (changed) notes.unshift(`Nuevo aviso del NHC: #${c.advisoryNumber}.`);
+  if (data.stale) notes.push('Sin conexión con el NHC: se muestran los últimos datos descargados.');
+  if (data.errors && data.errors.length) notes.push(`Fuentes con error: ${data.errors.join('; ')}`);
+  banner.hidden = notes.length === 0;
+  banner.classList.toggle('alert', Boolean(data.watchesWarnings && data.watchesWarnings.features.length));
+  banner.replaceChildren(...notes.map((n) => el('div', {}, n)));
+}
+
+function tickCountdown() {
+  if (!nextAdvisoryMs) { $('next').textContent = '—'; return; }
+  const diff = nextAdvisoryMs - Date.now();
+  const when = fmtTime(new Date(nextAdvisoryMs).toISOString());
+  if (diff <= 0) { $('next').textContent = `${when} (en cualquier momento)`; return; }
+  const h = Math.floor(diff / 3600000), m = Math.floor((diff % 3600000) / 60000), s = Math.floor((diff % 60000) / 1000);
+  $('next').textContent = `${when} · en ${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+}
+
+// ---------- map ----------
+
+let map, layers, fitted = false;
+
+function initMap() {
+  map = L.map('map', { zoomSnap: 0.5, worldCopyJump: true }).setView([18, -103], 5);
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const base = `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${dark ? 'Dark' : 'Light'}_Gray_Base/MapServer/tile/{z}/{y}/{x}`;
+  L.tileLayer(base, { attribution: 'Tiles &copy; Esri · Datos: NHC/NOAA', maxZoom: 10 }).addTo(map);
+  layers = L.layerGroup().addTo(map);
+  for (const [name, lat, lon] of CITIES) {
+    L.circleMarker([lat, lon], { radius: 3, color: css('--text-secondary'), weight: 1, fillOpacity: 1 })
+      .bindTooltip(name, { permanent: true, direction: 'right', className: 'city-label', offset: [4, 0] })
+      .addTo(map);
+  }
+}
+
+const WW_STYLE = {
+  TWA: ['#eda100', 'Vigilancia de tormenta tropical'],
+  TWR: ['#2a78d6', 'Aviso de tormenta tropical'],
+  HWA: ['#e87ba4', 'Vigilancia de huracán'],
+  HWR: ['#d03b3b', 'Aviso de huracán'],
+};
+
+function renderMap(data) {
+  layers.clearLayers();
+  const ink = css('--text-primary'), muted = css('--text-muted'), surface = css('--surface-1');
+  const bounds = [];
+
+  if (data.cone && data.cone.features.length) {
+    const cone = L.geoJSON(data.cone, { style: { color: ink, weight: 1, opacity: 0.7, fillColor: ink, fillOpacity: 0.1 }, interactive: false });
+    layers.addLayer(cone);
+    bounds.push(cone.getBounds());
+  }
+  if (data.watchesWarnings) {
+    layers.addLayer(L.geoJSON(data.watchesWarnings, {
+      style: (f) => ({ color: (WW_STYLE[f.properties.tcww] || ['#d03b3b'])[0], weight: 5 }),
+      onEachFeature: (f, l) => l.bindTooltip((WW_STYLE[f.properties.tcww] || [null, f.properties.tcww])[1]),
+    }));
+  }
+
+  const past = (data.history || []).filter((p) => p.windKt);
+  if (past.length) {
+    layers.addLayer(L.polyline(past.map((p) => [p.lat, p.lon]), { color: muted, weight: 2 }));
+    for (const p of past) {
+      L.circleMarker([p.lat, p.lon], { radius: 3, color: surface, weight: 1, fillColor: muted, fillOpacity: 1 })
+        .bindTooltip(`${fmtTime(p.time)} · ${kmh(p.windKt)} km/h · ${catOf(p.windKt).long} (observado)`)
+        .addTo(layers);
+    }
+  }
+
+  const track = forecastTrack(data);
+  if (track.length) {
+    layers.addLayer(L.polyline(track.map((p) => [p.lat, p.lon]), { color: ink, weight: 2, dashArray: '6 6' }));
+    for (const p of track) {
+      const marker = L.circleMarker([p.lat, p.lon], {
+        radius: p.now ? 9 : 6, color: p.now ? ink : surface, weight: 2, fillColor: catColor(p.windKt), fillOpacity: 1,
+      });
+      marker.bindTooltip(
+        `${p.now ? 'Posición del aviso' : fmtTime(p.valid)} · ${kmh(p.windKt)} km/h (${p.windKt} kt) · ${catOf(p.windKt).long}` +
+        (p.status ? ` · ${p.status}` : ''));
+      layers.addLayer(marker);
+      bounds.push(L.latLngBounds([p.lat, p.lon], [p.lat, p.lon]));
+    }
+  }
+
+  if (!fitted && bounds.length) {
+    const all = bounds.reduce((acc, b) => acc.extend(b), L.latLngBounds(bounds[0].getSouthWest(), bounds[0].getNorthEast()));
+    for (const p of past.slice(-6)) all.extend([p.lat, p.lon]);
+    map.fitBounds(all.pad(0.12));
+    fitted = true;
+  }
+
+  const legend = $('mapLegend');
+  const swatch = (color) => el('span', { class: 'dot', style: `background:${color}` });
+  legend.replaceChildren(
+    ...[...CATEGORIES].reverse().map((c) => el('span', {}, swatch(css(`--cat-${c.key}`)), c.short)),
+    el('span', {}, 'Línea punteada: pronóstico · sombreado: cono de incertidumbre'),
+  );
+}
+
+// ---------- intensity chart ----------
+
+function renderChart(data) {
+  const host = $('chart');
+  host.querySelector('svg')?.remove();
+  const observed = (data.history || []).filter((p) => p.windKt).map((p) => ({ t: Date.parse(p.time), kt: p.windKt, kind: 'Observado' }));
+  const forecast = forecastTrack(data).filter((p) => p.windKt).map((p) => ({ t: p.t, kt: p.windKt, kind: p.now ? 'Aviso actual' : 'Pronóstico' }));
+  const points = [...observed, ...forecast];
+  if (points.length < 2) return;
+
+  const W = Math.max(320, host.clientWidth), H = 280;
+  const m = { top: 12, right: 52, bottom: 28, left: 40 };
+  const t0 = Math.min(...points.map((p) => p.t)), t1 = Math.max(...points.map((p) => p.t));
+  const yMax = Math.max(140, Math.ceil((Math.max(...points.map((p) => p.kt)) * KT_TO_KMH + 20) / 40) * 40);
+  const x = (t) => m.left + ((t - t0) / (t1 - t0)) * (W - m.left - m.right);
+  const y = (kt) => H - m.bottom - ((kt * KT_TO_KMH) / yMax) * (H - m.top - m.bottom);
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Viento máximo sostenido observado y pronosticado');
+  const add = (tag, attrs, text) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    svg.append(n);
+    return n;
+  };
+  const label = { 'font-size': 11, fill: css('--text-muted') };
+
+  for (let v = 0; v <= yMax; v += 40) {
+    const yy = y(v / KT_TO_KMH);
+    add('line', { x1: m.left, x2: W - m.right, y1: yy, y2: yy, stroke: css('--grid'), 'stroke-width': 1 });
+    add('text', { ...label, x: m.left - 6, y: yy + 4, 'text-anchor': 'end' }, v);
+  }
+  // Category thresholds: labelled reference lines, not a second axis.
+  for (const c of THRESHOLDS) {
+    if (c.min * KT_TO_KMH > yMax) continue;
+    const yy = y(c.min);
+    add('line', { x1: m.left, x2: W - m.right, y1: yy, y2: yy, stroke: css('--text-muted'), 'stroke-width': 1, 'stroke-dasharray': '2 4' });
+    add('text', { ...label, x: W - m.right + 6, y: yy + 4 }, c.short);
+  }
+  const dayFmt = new Intl.DateTimeFormat('es-MX', { weekday: 'short', day: 'numeric' });
+  const start = new Date(t0); start.setHours(24, 0, 0, 0);
+  for (let t = start.getTime(); t <= t1; t += 86400000) {
+    add('line', { x1: x(t), x2: x(t), y1: H - m.bottom, y2: H - m.bottom + 4, stroke: css('--text-muted') });
+    add('text', { ...label, x: x(t), y: H - 8, 'text-anchor': 'middle' }, dayFmt.format(new Date(t)));
+  }
+  const now = Date.now();
+  if (now > t0 && now < t1) {
+    add('line', { x1: x(now), x2: x(now), y1: m.top, y2: H - m.bottom, stroke: css('--text-secondary'), 'stroke-width': 1 });
+    add('text', { ...label, x: x(now) + 4, y: m.top + 10, fill: css('--text-secondary') }, 'Ahora');
+  }
+
+  const path = (pts) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.kt).toFixed(1)}`).join('');
+  const line = { fill: 'none', stroke: css('--series-1'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' };
+  if (observed.length > 1) add('path', { ...line, d: path(observed) });
+  if (forecast.length > 1) add('path', { ...line, d: path(forecast), 'stroke-dasharray': '5 4' });
+  for (const p of forecast) {
+    add('circle', { cx: x(p.t), cy: y(p.kt), r: 4, fill: css('--series-1'), stroke: css('--surface-1'), 'stroke-width': 2 });
+  }
+  const peak = forecast.reduce((a, b) => (b.kt > a.kt ? b : a), forecast[0]);
+  if (peak) add('text', { 'font-size': 12, 'font-weight': 600, fill: css('--text-primary'), x: x(peak.t), y: y(peak.kt) - 9, 'text-anchor': 'middle' }, `${kmh(peak.kt)}`);
+
+  const cross = add('line', { y1: m.top, y2: H - m.bottom, stroke: css('--text-secondary'), 'stroke-width': 1, visibility: 'hidden' });
+  const dot = add('circle', { r: 5, fill: css('--series-1'), stroke: css('--surface-1'), 'stroke-width': 2, visibility: 'hidden' });
+  const tip = $('tip');
+  svg.addEventListener('pointermove', (ev) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((ev.clientX - box.left) / box.width) * W;
+    const p = points.reduce((a, b) => (Math.abs(x(b.t) - px) < Math.abs(x(a.t) - px) ? b : a));
+    cross.setAttribute('x1', x(p.t)); cross.setAttribute('x2', x(p.t)); cross.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', x(p.t)); dot.setAttribute('cy', y(p.kt)); dot.setAttribute('visibility', 'visible');
+    tip.replaceChildren(
+      el('div', { class: 'muted' }, `${fmtTime(new Date(p.t).toISOString())} · ${p.kind}`),
+      el('div', {}, el('b', {}, `${kmh(p.kt)} km/h`), ` (${p.kt} kt) · ${catOf(p.kt).long}`));
+    tip.style.display = 'block';
+    const left = (x(p.t) / W) * box.width;
+    tip.style.left = `${Math.min(Math.max(0, left - tip.offsetWidth / 2), box.width - tip.offsetWidth)}px`;
+    tip.style.top = `${Math.max(0, (y(p.kt) / H) * box.height - tip.offsetHeight - 12)}px`;
+  });
+  svg.addEventListener('pointerleave', () => {
+    tip.style.display = 'none';
+    cross.setAttribute('visibility', 'hidden');
+    dot.setAttribute('visibility', 'hidden');
+  });
+  host.prepend(svg);
+}
+
+// ---------- tables and text ----------
+
+function row(tag, cells) {
+  return el('tr', {}, ...cells.map(([text, cls]) => el(tag, cls ? { class: cls } : {}, text)));
+}
+
+function catCell(kt) {
+  return el('span', { style: 'display:inline-flex;align-items:center;gap:6px' },
+    el('span', { class: 'dot', style: `background:${catColor(kt)}` }), catOf(kt).long);
+}
+
+function renderForecast(data) {
+  const table = $('forecast');
+  table.replaceChildren();
+  const track = forecastTrack(data);
+  if (!track.length) { table.append(row('td', [['Sin pronóstico disponible.']])); return; }
+  table.append(row('th', [['Válido (hora local)'], ['Horas', 'num'], ['Posición'], ['Viento km/h', 'num'], ['Rachas km/h', 'num'], ['Nudos', 'num'], ['Categoría'], ['Nota']]));
+  for (const p of track) {
+    table.append(row('td', [
+      [p.now ? `${fmtTime(new Date(p.t).toISOString())} (aviso)` : fmtTime(p.valid)],
+      [p.now ? '0' : `+${p.tau}`, 'num'],
+      [fmtPos(p.lat, p.lon)],
+      [String(kmh(p.windKt)), 'num'],
+      [p.gustKt ? String(kmh(p.gustKt)) : '—', 'num'],
+      [String(p.windKt), 'num'],
+      [catCell(p.windKt)],
+      [p.status || ''],
+    ]));
+  }
+}
+
+function renderCities(data) {
+  const table = $('cities');
+  table.replaceChildren();
+  const track = forecastTrack(data);
+  if (track.length < 2) { table.append(row('td', [['Sin pronóstico disponible.']])); return; }
+  table.append(row('th', [['Ciudad'], ['Distancia', 'num'], ['Cuándo'], ['Intensidad entonces']]));
+  CITIES
+    .map(([name, lat, lon]) => ({ name, ...closestApproach(track, lat, lon) }))
+    .sort((a, b) => a.km - b.km)
+    .forEach((c) => table.append(row('td', [
+      [c.name],
+      [`${Math.round(c.km / 5) * 5} km`, 'num'],
+      [c.t <= track[0].t ? 'Ya pasó / ahora' : fmtTime(new Date(c.t).toISOString())],
+      [catCell(c.windKt)],
+    ])));
+}
+
+function renderTexts(data) {
+  const adv = (lang === 'es' && data.advisoryEs) || data.advisory;
+  const box = $('advisoryText');
+  box.replaceChildren();
+  if (!adv) box.append(el('div', { class: 'muted' }, 'Aviso no disponible.'));
+  else {
+    // The summary block repeats the KPI row, so skip it.
+    for (const s of adv.sections.slice(1)) {
+      box.append(el('h3', {}, s.title), el('pre', {}, s.body));
+    }
+  }
+  $('langEs').setAttribute('aria-pressed', String(lang === 'es'));
+  $('langEn').setAttribute('aria-pressed', String(lang === 'en'));
+  $('discussion').textContent = data.discussion || 'No disponible.';
+
+  const links = data.links || {};
+  const items = [
+    ['Aviso público', links.publicAdvisory], ['Pronóstico/aviso marino', links.forecastAdvisory],
+    ['Discusión', links.discussion], ['Gráficos oficiales (cono, vientos)', links.graphics],
+    ['Portada NHC', 'https://www.nhc.noaa.gov/'],
+  ].filter(([, url]) => url);
+  $('links').replaceChildren(...items.map(([text, url]) =>
+    el('div', {}, el('a', { href: url, target: '_blank', rel: 'noopener' }, text))));
+}
+
+// ---------- refresh loop ----------
+
+function render(data, changed = false) {
+  latest = data;
+  renderHeader(data);
+  renderBanner(data, changed);
+  renderKpis(data);
+  renderMap(data);
+  renderChart(data);
+  renderForecast(data);
+  renderCities(data);
+  renderTexts(data);
+  nextAdvisoryMs = data.forecast && data.forecast.nextAdvisory ? Date.parse(data.forecast.nextAdvisory) : null;
+  tickCountdown();
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/storm');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    const adv = data.current ? data.current.advisoryNumber : null;
+    const changed = lastAdvisory !== null && adv !== null && adv !== lastAdvisory;
+    if (adv !== null) lastAdvisory = adv;
+    render(data, changed);
+    $('checked').textContent = `Última consulta al NHC: ${clock.format(new Date(data.fetchedAt))}`;
+  } catch (err) {
+    $('checked').textContent = `Error al actualizar (${err.message}); reintentando…`;
+  }
+}
+
+$('langEs').addEventListener('click', () => { lang = 'es'; if (latest) renderTexts(latest); });
+$('langEn').addEventListener('click', () => { lang = 'en'; if (latest) renderTexts(latest); });
+addEventListener('resize', () => { if (latest) renderChart(latest); });
+
+initMap();
+refresh();
+setInterval(refresh, REFRESH_MS);
+setInterval(tickCountdown, 1000);
+</script>
+</body>
+</html>

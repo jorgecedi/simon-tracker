@@ -1,0 +1,10 @@
+{
+  "name": "simon-tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "wrangler pages dev",
+    "deploy": "wrangler pages deploy"
+  }
+}
