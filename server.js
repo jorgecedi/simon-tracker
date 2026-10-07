@@ -7,43 +7,54 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { buildSnapshot, DEFAULT_STORM_ID, SNAPSHOT_TTL_SECONDS } from './lib/snapshot.js';
+import {
+  buildSnapshot,
+  buildForecastArchive,
+  DEFAULT_STORM_ID,
+  SNAPSHOT_TTL_SECONDS,
+  ARCHIVE_TTL_SECONDS,
+} from './lib/snapshot.js';
 
 const PORT = Number(process.env.PORT || 8790);
 const STORM_ID = process.env.STORM_ID || DEFAULT_STORM_ID;
 
-let cached = null;
-let cachedAt = 0;
-let inFlight = null;
+const cache = new Map();
 
-async function getSnapshot() {
-  if (cached && Date.now() - cachedAt < SNAPSHOT_TTL_SECONDS * 1000) return cached;
-  if (!inFlight) {
-    inFlight = buildSnapshot(STORM_ID)
-      .then((s) => {
-        cached = s;
-        cachedAt = Date.now();
-        return s;
+// Caches each endpoint's payload and keeps serving the last good one if NHC is unreachable.
+function cached(key, ttlSeconds, build) {
+  const entry = cache.get(key) || {};
+  if (entry.value && Date.now() - entry.at < ttlSeconds * 1000) return entry.value;
+  if (!entry.inFlight) {
+    entry.inFlight = build()
+      .then((value) => {
+        entry.value = value;
+        entry.at = Date.now();
+        return value;
       })
       .catch((err) => {
-        // Keep serving the last good snapshot if NHC is unreachable.
-        if (cached) return { ...cached, stale: true, errors: [`feed: ${err.message}`] };
+        if (entry.value) return { ...entry.value, stale: true, errors: [`feed: ${err.message}`] };
         throw err;
       })
       .finally(() => {
-        inFlight = null;
+        entry.inFlight = null;
       });
+    cache.set(key, entry);
   }
-  return inFlight;
+  return entry.inFlight;
 }
+
+const ROUTES = {
+  '/api/storm': () => cached('storm', SNAPSHOT_TTL_SECONDS, () => buildSnapshot(STORM_ID)),
+  '/api/forecasts': () => cached('forecasts', ARCHIVE_TTL_SECONDS, () => buildForecastArchive(STORM_ID)),
+};
 
 const INDEX = fileURLToPath(new URL('./public/index.html', import.meta.url));
 
 const handler = async (req, res) => {
   const { pathname } = new URL(req.url, 'http://localhost');
-  if (pathname === '/api/storm') {
+  if (ROUTES[pathname]) {
     try {
-      const body = JSON.stringify(await getSnapshot());
+      const body = JSON.stringify(await ROUTES[pathname]());
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(body);
     } catch (err) {

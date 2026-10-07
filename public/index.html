@@ -107,6 +107,7 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
   td.num, th.num { text-align: right; }
+  td small { display: block; color: var(--text-muted); font-size: 11px; }
   tr:last-child td { border-bottom: 0; }
   .scroll { overflow-x: auto; }
 
@@ -175,6 +176,12 @@
   <section class="card">
     <h2>Pronóstico oficial por punto</h2>
     <div class="scroll"><table id="forecast"></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Pronóstico vs. realidad</h2>
+    <div class="scroll"><table id="verification"></table></div>
+    <div class="muted" id="verificationNote" style="font-size:12px;margin-top:8px"></div>
   </section>
 
   <section class="cols">
@@ -292,12 +299,46 @@ function closestApproach(track, lat, lon) {
   return best;
 }
 
+// Observed position and wind at a given time, interpolated on the best track.
+function observedAt(history, t) {
+  for (let i = 0; i < history.length - 1; i++) {
+    const a = history[i], b = history[i + 1];
+    if (t < a.t || t > b.t) continue;
+    const k = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
+    return { lat: a.lat + (b.lat - a.lat) * k, lon: a.lon + (b.lon - a.lon) * k, windKt: a.windKt + (b.windKt - a.windKt) * k };
+  }
+  return null;
+}
+
+const LEADS = [12, 24, 36, 48, 60, 72, 96, 120];
+// NHC lead times count from the synoptic hour, 3 h before a regular advisory is issued.
+const leadHours = (issuedMs, validMs) => Math.round((validMs - issuedMs + 3 * 3600000) / (12 * 3600000)) * 12;
+
+// Track and intensity error of every archived forecast point that already has an observation.
+function verifyForecasts(data, archive) {
+  const history = (data.history || []).filter((p) => p.windKt).map((p) => ({ ...p, t: Date.parse(p.time) }));
+  return (archive.advisories || []).map((adv) => {
+    const issuedMs = Date.parse(adv.issued);
+    const cells = {};
+    for (const p of adv.points) {
+      if (p.lat === null || p.windKt === null) continue;
+      const validMs = Date.parse(p.valid);
+      const obs = observedAt(history, validMs);
+      cells[leadHours(issuedMs, validMs)] = obs
+        ? { km: haversineKm(p.lat, p.lon, obs.lat, obs.lon), windDiffKt: p.windKt - obs.windKt }
+        : { pending: validMs };
+    }
+    return { ...adv, cells };
+  });
+}
+
 // ---------- header, KPIs, banner ----------
 
 let lastAdvisory = null;
 let nextAdvisoryMs = null;
 let lang = 'es';
 let latest = null;
+let archive = null;
 
 function renderHeader(data) {
   const c = data.current;
@@ -408,7 +449,7 @@ const WW_STYLE = {
   HWR: ['#d03b3b', 'Aviso de huracán'],
 };
 
-function renderMap(data) {
+function renderMap(data, archive) {
   layers.clearLayers();
   const ink = css('--text-primary'), muted = css('--text-muted'), surface = css('--surface-1');
   const bounds = [];
@@ -433,6 +474,15 @@ function renderMap(data) {
         .bindTooltip(`${fmtTime(p.time)} · ${kmh(p.windKt)} km/h · ${catOf(p.windKt).long} (observado)`)
         .addTo(layers);
     }
+  }
+
+  const currentAdvisory = data.forecast ? Number.parseInt(data.forecast.advisoryNumber, 10) : Infinity;
+  for (const adv of (archive && archive.advisories) || []) {
+    const pts = adv.points.filter((p) => p.lat !== null).map((p) => [p.lat, p.lon]);
+    if (adv.advisoryNumber >= currentAdvisory || pts.length < 2) continue;
+    L.polyline(pts, { color: muted, weight: 1.5, opacity: 0.8, dashArray: '2 5' })
+      .bindTooltip(`Pronóstico anterior: aviso #${adv.advisoryNumber} (${fmtTime(adv.issued)})`, { sticky: true })
+      .addTo(layers);
   }
 
   const track = forecastTrack(data);
@@ -461,7 +511,7 @@ function renderMap(data) {
   const swatch = (color) => el('span', { class: 'dot', style: `background:${color}` });
   legend.replaceChildren(
     ...[...CATEGORIES].reverse().map((c) => el('span', {}, swatch(css(`--cat-${c.key}`)), c.short)),
-    el('span', {}, 'Línea punteada: pronóstico · sombreado: cono de incertidumbre'),
+    el('span', {}, 'Línea punteada: pronóstico actual · punteado fino: pronósticos anteriores · sombreado: cono de incertidumbre'),
   );
 }
 
@@ -603,12 +653,53 @@ function renderCities(data) {
     ])));
 }
 
+function renderVerification(data, archive) {
+  const table = $('verification');
+  const note = $('verificationNote');
+  table.replaceChildren();
+  const rows = verifyForecasts(data, archive || {});
+  if (!rows.length) {
+    table.append(row('td', [['Archivo de pronósticos del NHC no disponible por ahora.']]));
+    note.textContent = '';
+    return;
+  }
+  const signed = (kt) => { const v = Math.round((kt * KT_TO_KMH) / 5) * 5; return `${v > 0 ? '+' : ''}${v} km/h`; };
+  table.append(row('th', [['Aviso'], ['Emitido'], ...LEADS.map((h) => [`a ${h} h`, 'num'])]));
+  const sums = {};
+  let verified = 0, firstPending = Infinity;
+  for (const adv of rows) {
+    const cells = LEADS.map((h) => {
+      const c = adv.cells[h];
+      if (!c) return ['', 'num'];
+      if (c.pending) { firstPending = Math.min(firstPending, c.pending); return ['pendiente', 'num muted']; }
+      verified++;
+      sums[h] = sums[h] || { km: 0, wind: 0, n: 0 };
+      sums[h].km += c.km; sums[h].wind += Math.abs(c.windDiffKt); sums[h].n++;
+      return [el('span', {}, `${Math.round(c.km / 5) * 5} km`, el('small', {}, signed(c.windDiffKt))), 'num'];
+    });
+    table.append(row('td', [[`#${adv.advisoryNumber}`], [fmtTime(adv.issued)], ...cells]));
+  }
+  if (verified) {
+    table.append(row('th', [['Promedio'], [''], ...LEADS.map((h) => {
+      const s = sums[h];
+      return [s ? el('span', {}, `${Math.round(s.km / s.n / 5) * 5} km`, el('small', {}, `±${Math.round((s.wind / s.n) * KT_TO_KMH / 5) * 5} km/h`)) : '', 'num'];
+    })]));
+  }
+  const how = 'Cada celda: distancia entre el centro pronosticado y el observado; debajo, el error de viento (+ = el pronóstico fue más fuerte que la realidad). La trayectoria observada es el "best track" operativo del NHC, que es preliminar.';
+  note.textContent = verified || firstPending === Infinity ? how
+    : `Todavía no hay nada que comparar: el primer punto pronosticado (${fmtTime(new Date(firstPending).toISOString())}) aún no vence. ${how}`;
+}
+
 function renderTexts(data) {
   const adv = (lang === 'es' && data.advisoryEs) || data.advisory;
   const box = $('advisoryText');
   box.replaceChildren();
   if (!adv) box.append(el('div', { class: 'muted' }, 'Aviso no disponible.'));
   else {
+    if (lang === 'es' && !data.advisoryEs) {
+      box.append(el('div', { class: 'muted', style: 'margin-bottom:10px' },
+        'El NHC aún no publica la traducción de este aviso; se muestra el original en inglés.'));
+    }
     // The summary block repeats the KPI row, so skip it.
     for (const s of adv.sections.slice(1)) {
       box.append(el('h3', {}, s.title), el('pre', {}, s.body));
@@ -635,10 +726,11 @@ function render(data, changed = false) {
   renderHeader(data);
   renderBanner(data, changed);
   renderKpis(data);
-  renderMap(data);
+  renderMap(data, archive);
   renderChart(data);
   renderForecast(data);
   renderCities(data);
+  renderVerification(data, archive);
   renderTexts(data);
   nextAdvisoryMs = data.forecast && data.forecast.nextAdvisory ? Date.parse(data.forecast.nextAdvisory) : null;
   tickCountdown();
@@ -646,9 +738,11 @@ function render(data, changed = false) {
 
 async function refresh() {
   try {
-    const res = await fetch('/api/storm');
+    const [res, archiveRes] = await Promise.all([fetch('/api/storm'), fetch('/api/forecasts').catch(() => null)]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
+    // The archive is optional: keep the last good copy if it fails.
+    if (archiveRes && archiveRes.ok) archive = await archiveRes.json();
     const adv = data.current ? data.current.advisoryNumber : null;
     const changed = lastAdvisory !== null && adv !== null && adv !== lastAdvisory;
     if (adv !== null) lastAdvisory = adv;
