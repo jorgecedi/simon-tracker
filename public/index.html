@@ -95,8 +95,8 @@
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend svg { flex: none; }
 
-  #chart { position: relative; }
-  #chart svg { display: block; width: 100%; height: auto; }
+  #chart, #errorChart { position: relative; }
+  #chart svg, #errorChart svg { display: block; width: 100%; height: auto; }
   .tip {
     position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
     border-radius: 6px; padding: 6px 9px; font-size: 12px; white-space: nowrap; display: none;
@@ -186,6 +186,15 @@
 
   <section class="card">
     <h2>Pronóstico vs. realidad</h2>
+    <div id="errorBlock" hidden style="margin-bottom:14px">
+      <div class="sub" style="font-size:12px;margin-bottom:4px">Error de trayectoria (km) según la anticipación del pronóstico</div>
+      <div id="errorChart"><div class="tip" id="errorTip"></div></div>
+      <div class="legend">
+        <span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--series-1)" stroke-width="2.5"/></svg>Promedio de esta tormenta</span>
+        <span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--text-muted)" stroke-width="1"/></svg>Cada aviso</span>
+        <span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--text-secondary)" stroke-width="1.5" stroke-dasharray="5 4"/></svg>Promedio histórico del NHC (Pacífico oriental, 2020–2025)</span>
+      </div>
+    </div>
     <div class="scroll"><table id="verification"></table></div>
     <div class="muted" id="verificationNote" style="font-size:12px;margin-top:8px"></div>
   </section>
@@ -335,6 +344,11 @@ function observedAt(history, t) {
 const LEADS = [12, 24, 36, 48, 60, 72, 96, 120];
 // NHC lead times count from the synoptic hour, 3 h before a regular advisory is issued.
 const leadHours = (issuedMs, validMs) => Math.round((validMs - issuedMs + 3 * 3600000) / (12 * 3600000)) * 12;
+
+// NHC official mean track error, eastern North Pacific, 2020-2025, in n mi. From
+// nhc.noaa.gov/verification/pdfs/1989-present_OFCL_EPAC_annual_trk_errors.pdf, which has no 60 h column.
+const NHC_MEAN_TRACK_ERROR_NMI = { 12: 21.8, 24: 32.6, 36: 42.3, 48: 51.3, 72: 75.0, 96: 102.4, 120: 127.5 };
+const NMI_TO_KM = 1.852;
 
 // Track and intensity error of every archived forecast point that already has an observation.
 function verifyForecasts(data, archive) {
@@ -627,6 +641,90 @@ function renderChart(data) {
   host.prepend(svg);
 }
 
+// ---------- track error chart ----------
+
+function renderErrorChart(rows) {
+  const host = $('errorChart');
+  host.querySelector('svg')?.remove();
+  const perAdvisory = rows
+    .map((adv) => LEADS.filter((h) => adv.cells[h] && !adv.cells[h].pending).map((h) => ({ h, km: adv.cells[h].km })))
+    .filter((pts) => pts.length);
+  const mean = LEADS.map((h) => {
+    const kms = perAdvisory.flatMap((pts) => pts.filter((p) => p.h === h).map((p) => p.km));
+    return { h, n: kms.length, km: kms.reduce((a, b) => a + b, 0) / kms.length, min: Math.min(...kms), max: Math.max(...kms) };
+  }).filter((p) => p.n);
+  $('errorBlock').hidden = !mean.length;
+  if (!mean.length) return;
+  const reference = Object.entries(NHC_MEAN_TRACK_ERROR_NMI).map(([h, nmi]) => ({ h: Number(h), km: nmi * NMI_TO_KM }));
+
+  const W = Math.max(320, host.clientWidth), H = 260;
+  const m = { top: 20, right: 24, bottom: 28, left: 40 };
+  const h0 = LEADS[0], h1 = LEADS[LEADS.length - 1];
+  const yMax = Math.ceil(Math.max(...reference.map((p) => p.km), ...mean.map((p) => p.max)) / 50) * 50;
+  const x = (h) => m.left + ((h - h0) / (h1 - h0)) * (W - m.left - m.right);
+  const y = (km) => H - m.bottom - (km / yMax) * (H - m.top - m.bottom);
+  const round5 = (km) => Math.round(km / 5) * 5;
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Error de trayectoria de los pronósticos según su anticipación');
+  const add = (tag, attrs, text) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    svg.append(n);
+    return n;
+  };
+  const label = { 'font-size': 11, fill: css('--text-muted') };
+
+  for (let v = 0; v <= yMax; v += 50) {
+    add('line', { x1: m.left, x2: W - m.right, y1: y(v), y2: y(v), stroke: css('--grid'), 'stroke-width': 1 });
+    add('text', { ...label, x: m.left - 6, y: y(v) + 4, 'text-anchor': 'end' }, v);
+  }
+  for (const h of LEADS) {
+    add('line', { x1: x(h), x2: x(h), y1: H - m.bottom, y2: H - m.bottom + 4, stroke: css('--text-muted') });
+    add('text', { ...label, x: x(h), y: H - 8, 'text-anchor': 'middle' }, `${h} h`);
+  }
+
+  const path = (pts) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.h).toFixed(1)},${y(p.km).toFixed(1)}`).join('');
+  const line = { fill: 'none', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' };
+  add('path', { ...line, d: path(reference), stroke: css('--text-secondary'), 'stroke-width': 1.5, 'stroke-dasharray': '5 4' });
+  for (const pts of perAdvisory) {
+    if (pts.length > 1) add('path', { ...line, d: path(pts), stroke: css('--text-muted'), 'stroke-width': 1, opacity: 0.7 });
+    for (const p of pts) add('circle', { cx: x(p.h), cy: y(p.km), r: 2, fill: css('--text-muted'), opacity: 0.7 });
+  }
+  if (mean.length > 1) add('path', { ...line, d: path(mean), stroke: css('--series-1'), 'stroke-width': 2.5 });
+  for (const p of mean) {
+    add('circle', { cx: x(p.h), cy: y(p.km), r: 4, fill: css('--series-1'), stroke: css('--surface-1'), 'stroke-width': 2 });
+  }
+
+  const cross = add('line', { y1: m.top, y2: H - m.bottom, stroke: css('--text-secondary'), 'stroke-width': 1, visibility: 'hidden' });
+  const tip = $('errorTip');
+  svg.addEventListener('pointermove', (ev) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((ev.clientX - box.left) / box.width) * W;
+    const p = mean.reduce((a, b) => (Math.abs(x(b.h) - px) < Math.abs(x(a.h) - px) ? b : a));
+    const ref = reference.find((r) => r.h === p.h);
+    cross.setAttribute('x1', x(p.h)); cross.setAttribute('x2', x(p.h)); cross.setAttribute('visibility', 'visible');
+    tip.replaceChildren(
+      el('div', { class: 'muted' }, `Pronósticos a ${p.h} h · ${p.n} ${p.n === 1 ? 'aviso' : 'avisos'}`),
+      el('div', {}, el('b', {}, `${round5(p.km)} km`), ' en promedio',
+        p.n > 1 ? ` (de ${round5(p.min)} a ${round5(p.max)} km)` : ''),
+      ref ? el('div', { class: 'muted' }, `Histórico del NHC: ${round5(ref.km)} km`) : null);
+    tip.style.display = 'block';
+    const left = (x(p.h) / W) * box.width;
+    tip.style.left = `${Math.min(Math.max(0, left - tip.offsetWidth / 2), box.width - tip.offsetWidth)}px`;
+    tip.style.top = `${Math.max(0, (y(p.max) / H) * box.height - tip.offsetHeight - 12)}px`;
+  });
+  svg.addEventListener('pointerleave', () => {
+    tip.style.display = 'none';
+    cross.setAttribute('visibility', 'hidden');
+  });
+  host.prepend(svg);
+}
+
 // ---------- tables and text ----------
 
 function row(tag, cells) {
@@ -727,6 +825,7 @@ function renderVerification(data, archive) {
   const note = $('verificationNote');
   table.replaceChildren();
   const rows = verifyForecasts(data, archive || {});
+  renderErrorChart(rows);
   if (!rows.length) {
     table.append(row('td', [['Archivo de pronósticos del NHC no disponible por ahora.']]));
     note.textContent = '';
@@ -829,7 +928,7 @@ async function refresh() {
 
 $('langEs').addEventListener('click', () => { lang = 'es'; if (latest) renderTexts(latest); });
 $('langEn').addEventListener('click', () => { lang = 'en'; if (latest) renderTexts(latest); });
-addEventListener('resize', () => { if (latest) renderChart(latest); });
+addEventListener('resize', () => { if (latest) { renderChart(latest); renderVerification(latest, archive); } });
 
 initMap();
 refresh();
