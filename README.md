@@ -4,8 +4,8 @@ Live dashboard for Tropical Depression Twenty-E / Simon (East Pacific, 2026), bu
 public [National Hurricane Center](https://www.nhc.noaa.gov/) data. The UI is in Spanish.
 
 It shows the forecast track and cone, current intensity, the intensity forecast, the
-closest approach of the forecast center to cities on Mexico's Pacific coast, and the
-public advisory. It refreshes every 10 minutes.
+closest approach of the forecast center to cities on Mexico's Pacific coast, the wind
+speed probabilities per location, and the public advisory. It refreshes every 10 minutes.
 
 Informational only. For safety decisions follow the NHC, SMN/CONAGUA and Protección Civil.
 

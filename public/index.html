@@ -107,7 +107,7 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
   td.num, th.num { text-align: right; }
-  td small { display: block; color: var(--text-muted); font-size: 11px; }
+  td small, th small { display: block; color: var(--text-muted); font-size: 11px; font-weight: 400; }
   tr:last-child td { border-bottom: 0; }
   .scroll { overflow-x: auto; }
 
@@ -138,7 +138,7 @@
     </div>
     <div class="status">
       <div id="advisory" class="sub"></div>
-      <div>Próximo aviso: <b id="next">—</b></div>
+      <div><span id="nextLabel">Próximo aviso</span>: <b id="next">—</b></div>
       <div class="muted" id="checked"></div>
     </div>
   </header>
@@ -171,6 +171,12 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>Probabilidad de vientos por lugar</h2>
+    <div class="scroll"><table id="winds"></table></div>
+    <div class="muted" id="windsNote" style="font-size:12px;margin-top:8px"></div>
   </section>
 
   <section class="card">
@@ -239,6 +245,21 @@ const CLASS_NAMES = {
   STD: 'Depresión Subtropical', STS: 'Tormenta Subtropical',
   PTC: 'Potencial Ciclón Tropical', PC: 'Ciclón Post-tropical', EX: 'Ciclón Post-tropical',
 };
+// Wind thresholds of the NHC probability product. It omits a row when the 5-day
+// chance is under `floor` percent.
+const WIND_LEVELS = [
+  { kt: 34, kmh: 63, label: 'Tormenta tropical', floor: 3 },
+  { kt: 50, kmh: 93, label: 'Tormenta fuerte', floor: 3 },
+  { kt: 64, kmh: 119, label: 'Huracán', floor: 1 },
+];
+// Abbreviated NHC place names that need more than title case.
+const PLACE_NAMES = {
+  'P VALLARTA': 'Puerto Vallarta', 'BARRA NAVIDAD': 'Barra de Navidad', 'SAN JOSE CABO': 'San José del Cabo',
+  'ISLAS MARIAS': 'Islas Marías', 'MAZATLAN': 'Mazatlán', 'CULIACAN': 'Culiacán', 'L CARDENAS': 'Lázaro Cárdenas',
+  'P MALDONADO': 'Punta Maldonado', 'P ANGEL': 'Puerto Ángel', 'P ESCONDIDO': 'Puerto Escondido',
+  'P ABREOJOS': 'Punta Abreojos', 'P EUGENIA': 'Punta Eugenia', 'P PENASCO': 'Puerto Peñasco',
+  'BAHIA KINO': 'Bahía Kino', 'TEHUANTEPEC': 'Tehuantepec',
+};
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSO', 'SO', 'OSO', 'O', 'ONO', 'NO', 'NNO'];
 
 const $ = (id) => document.getElementById(id);
@@ -253,6 +274,7 @@ const fmtPos = (lat, lon) => `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S
 const dayTime = new Intl.DateTimeFormat('es-MX', { weekday: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 const clock = new Intl.DateTimeFormat('es-MX', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 const fmtTime = (iso) => dayTime.format(new Date(iso));
+const dayHour = new Intl.DateTimeFormat('es-MX', { weekday: 'short', hour: 'numeric' });
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -653,6 +675,53 @@ function renderCities(data) {
     ])));
 }
 
+function placeName(raw) {
+  if (PLACE_NAMES[raw]) return PLACE_NAMES[raw];
+  const grid = raw.match(/^(\d+)([NS]) (\d+)([EW])$/);
+  if (grid) return `Mar abierto ${grid[1]}°${grid[2]} ${grid[3]}°${grid[4] === 'W' ? 'O' : 'E'}`;
+  return raw.toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+}
+
+function renderWinds(data) {
+  const table = $('winds');
+  const note = $('windsNote');
+  table.replaceChildren();
+  const w = data.windProbabilities;
+  if (!w || !w.locations.length) {
+    table.append(row('td', [['Probabilidades de viento no disponibles por ahora.']]));
+    note.textContent = '';
+    return;
+  }
+  const total = (loc, kt) => (loc.winds[kt] ? loc.winds[kt].cumulative.at(-1) : -1);
+  table.append(row('th', [
+    ['Lugar'],
+    ...WIND_LEVELS.map((l) => [el('span', {}, l.label, el('small', {}, `${l.kmh} km/h o más`)), 'num']),
+    ['Inicio más probable'],
+  ]));
+  [...w.locations]
+    .sort((a, b) => total(b, 64) - total(a, 64) || total(b, 50) - total(a, 50) || total(b, 34) - total(a, 34))
+    .forEach((loc) => {
+      const cells = WIND_LEVELS.map((l) => {
+        const p = total(loc, l.kt);
+        if (p < 0) return [`<${l.floor}%`, 'num muted'];
+        return p === 0 ? ['<1%', 'num muted'] : [el('b', {}, `${p}%`), 'num'];
+      });
+      // Period in which tropical-storm-force winds are most likely to begin.
+      const onset = loc.winds[34] ? loc.winds[34].onset : [];
+      const peak = onset.indexOf(Math.max(0, ...onset));
+      const period = onset[peak] > 0 ? w.periods[peak] : null;
+      table.append(row('td', [
+        [placeName(loc.name)],
+        ...cells,
+        [period ? `${dayHour.format(new Date(period.start))} – ${dayHour.format(new Date(period.end))}` : '—'],
+      ]));
+    });
+  note.textContent =
+    `Probabilidad, en los próximos 5 días, de viento sostenido de al menos esa fuerza en cada lugar, según el aviso #${Number.parseInt(w.advisoryNumber, 10)} (${fmtTime(w.issued)}). ` +
+    'Tormenta tropical: ramas y árboles caídos, apagones. Huracán: techos ligeros arrancados, postes caídos, apagones de días. ' +
+    'El NHC solo la recalcula con los avisos completos, cada 6 horas. No mide lluvia ni marejada, que pueden hacer más daño que el viento.';
+}
+
 function renderVerification(data, archive) {
   const table = $('verification');
   const note = $('verificationNote');
@@ -730,9 +799,14 @@ function render(data, changed = false) {
   renderChart(data);
   renderForecast(data);
   renderCities(data);
+  renderWinds(data);
   renderVerification(data, archive);
   renderTexts(data);
-  nextAdvisoryMs = data.forecast && data.forecast.nextAdvisory ? Date.parse(data.forecast.nextAdvisory) : null;
+  // The public advisory also announces intermediate advisories; the forecast advisory only the complete ones.
+  const next = (data.advisory && data.advisory.next) ||
+    (data.forecast && data.forecast.nextAdvisory ? { time: data.forecast.nextAdvisory, kind: 'complete' } : null);
+  nextAdvisoryMs = next ? Date.parse(next.time) : null;
+  $('nextLabel').textContent = `Próximo aviso${next ? ` (${next.kind === 'intermediate' ? 'intermedio' : 'completo'})` : ''}`;
   tickCountdown();
 }
 
